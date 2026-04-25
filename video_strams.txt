@@ -1,0 +1,22 @@
+import cv2
+
+stream_url = "https://kaztoll.kz/livestream/cam1.mp4" 
+
+cap = cv2.VideoCapture(stream_url)
+
+while True:
+    ret, frame = cap.read()
+    if not ret:
+        break
+    
+Available cams to use:
+cam1.mp4
+cam3.mp4
+cam4.mp4
+cam2.mp4
+jjvezd.mp4
+arshaly.mp4
+anar.mp4
+oshagandy.mp4
+ttvezd.mp4
+kunaev.mp4

@@ -1,0 +1,43 @@
+# /etc/systemd/system/watchdog.service
+#
+# Hardened systemd service — OS-level watchdog alternative to src/watchdog.py.
+# Copy to /etc/systemd/system/ then:
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now watchdog.service
+#   journalctl -fu watchdog.service   # follow logs
+
+[Unit]
+Description=Multistream Vision Watchdog
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=<user>
+WorkingDirectory=<working-directory>
+
+# Replace with your actual venv python path
+ExecStart=<project-directory>/.venv/bin/python -m src.main
+
+# Restart policy: always restart, max 5 attempts in 60 s
+Restart=always
+RestartSec=2
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+# systemd native watchdog: process must call sd_notify(WATCHDOG=1) every 10 s
+# or systemd will SIGKILL it. The Python sd-notify package handles this.
+WatchdogSec=10
+NotifyAccess=main
+
+# Resource limits
+MemoryMax=2G
+CPUQuota=400%
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=vision-watchdog
+
+[Install]
+WantedBy=multi-user.target
