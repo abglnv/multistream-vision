@@ -1,4 +1,5 @@
 import asyncio
+import concurrent.futures
 import logging
 from typing import Optional
 
@@ -13,6 +14,10 @@ GRID_COLS = 3
 
 _latest_jpeg: bytes = b""
 
+_inference_pool = concurrent.futures.ThreadPoolExecutor(
+    max_workers=4, thread_name_prefix="infer"
+)
+
 
 class InferenceEngine:
     def __init__(self, model_path: str = "models/yolov8n.onnx"):
@@ -23,12 +28,12 @@ class InferenceEngine:
     def _load(self) -> None:
         try:
             import onnxruntime as ort
-            self.session = ort.InferenceSession(
-                self.model_path,
-                providers=["CUDAExecutionProvider", "CPUExecutionProvider"]
-            )
+            available = ort.get_available_providers()
+            providers = [p for p in ["CUDAExecutionProvider", "CPUExecutionProvider"]
+                         if p in available]
+            self.session = ort.InferenceSession(self.model_path, providers=providers)
             inp = self.session.get_inputs()[0]
-            logger.info(f"ONNX model loaded — input: {inp.name} {inp.shape}")
+            logger.info(f"ONNX model loaded ({providers[0]}) — input: {inp.name} {inp.shape}")
         except Exception as exc:
             logger.warning(f"Running in stub mode (no model): {exc}")
 
@@ -44,7 +49,6 @@ class InferenceEngine:
     def infer(self, batch: np.ndarray) -> np.ndarray:
         if self.session is None:
             return np.zeros((batch.shape[0], 84, 8400), dtype=np.float32)
-
         name = self.session.get_inputs()[0].name
         return self.session.run(None, {name: batch})[0]
 
@@ -81,6 +85,11 @@ def make_grid(frames: dict[int, np.ndarray], n_streams: int) -> np.ndarray:
     return grid
 
 
+async def _run_in_inference_pool(fn, *args):
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(_inference_pool, fn, *args)
+
+
 async def inference_consumer(
     queues: list[asyncio.Queue],
     engine: InferenceEngine,
@@ -103,15 +112,9 @@ async def inference_consumer(
             continue
 
         indices, live_frames = zip(*live)
-        logger.info(f"[consumer] got frames from streams {list(indices)}")
 
-        logger.info("[consumer] preprocessing...")
-        batch = await asyncio.to_thread(engine.preprocess, list(live_frames))
-        logger.info(f"[consumer] preprocessed → {batch.shape}")
-
-        logger.info("[consumer] inferring...")
-        output = await asyncio.to_thread(engine.infer, batch)
-        logger.info(f"[consumer] inferred → {output.shape}")
+        batch = await _run_in_inference_pool(engine.preprocess, list(live_frames))
+        output = await _run_in_inference_pool(engine.infer, batch)
 
         for i, frame in enumerate(live_frames):
             latest_frames[indices[i]] = draw_boxes(frame, np.empty((0, 4)), indices[i])
@@ -129,9 +132,9 @@ async def inference_consumer(
                 logger.debug(f"stream {stream_id}: {len(kept_boxes)} detections")
                 latest_frames[stream_id] = draw_boxes(live_frames[i], kept_boxes, stream_id)
         except ImportError:
-            pass 
+            pass
         except Exception as exc:
-            logger.error(f"NMS error: {exc}")  
+            logger.error(f"NMS error: {exc}")
 
         if latest_frames:
             def _encode():
@@ -139,9 +142,7 @@ async def inference_consumer(
                 _, buf = cv2.imencode(".jpg", g, [cv2.IMWRITE_JPEG_QUALITY, 70])
                 return buf.tobytes()
 
-            jpeg = await asyncio.to_thread(_encode)
-            global _latest_jpeg
-            _latest_jpeg = jpeg
+            _latest_jpeg = await _run_in_inference_pool(_encode)
 
         await asyncio.sleep(0)
 
