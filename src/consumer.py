@@ -105,6 +105,9 @@ async def inference_consumer(
         batch = await asyncio.to_thread(engine.preprocess, list(live_frames))
         output = await asyncio.to_thread(engine.infer, batch)
 
+        for i, frame in enumerate(live_frames):
+            latest_frames[indices[i]] = frame
+
         preds = output.transpose(0, 2, 1)
 
         try:
@@ -115,12 +118,12 @@ async def inference_consumer(
                 keep = nms_cuda.run_nms(boxes_np, scores_np, iou_threshold=0.45)
                 kept_boxes = boxes_np[keep.astype(bool)]
                 stream_id = indices[i]
-                logger.debug(f"stream {stream_id}: {len(kept_boxes)} detections after NMS")
+                logger.debug(f"stream {stream_id}: {len(kept_boxes)} detections")
                 latest_frames[stream_id] = draw_boxes(live_frames[i], kept_boxes, stream_id)
         except ImportError:
-            for i, pred in enumerate(preds):
-                latest_frames[indices[i]] = live_frames[i]
-            logger.debug(f"batch {list(indices)} → {output.shape} (nms_cuda not available)")
+            pass 
+        except Exception as exc:
+            logger.error(f"NMS error: {exc}")  
 
         if latest_frames:
             grid = await asyncio.to_thread(make_grid, latest_frames, len(queues))
