@@ -103,8 +103,15 @@ async def inference_consumer(
             continue
 
         indices, live_frames = zip(*live)
+        logger.info(f"[consumer] got frames from streams {list(indices)}")
+
+        logger.info("[consumer] preprocessing...")
         batch = await asyncio.to_thread(engine.preprocess, list(live_frames))
+        logger.info(f"[consumer] preprocessed → {batch.shape}")
+
+        logger.info("[consumer] inferring...")
         output = await asyncio.to_thread(engine.infer, batch)
+        logger.info(f"[consumer] inferred → {output.shape}")
 
         for i, frame in enumerate(live_frames):
             latest_frames[indices[i]] = draw_boxes(frame, np.empty((0, 4)), indices[i])
@@ -127,10 +134,14 @@ async def inference_consumer(
             logger.error(f"NMS error: {exc}")  
 
         if latest_frames:
-            grid = await asyncio.to_thread(make_grid, latest_frames, len(queues))
-            _, buf = cv2.imencode(".jpg", grid, [cv2.IMWRITE_JPEG_QUALITY, 70])
+            def _encode():
+                g = make_grid(latest_frames, len(queues))
+                _, buf = cv2.imencode(".jpg", g, [cv2.IMWRITE_JPEG_QUALITY, 70])
+                return buf.tobytes()
+
+            jpeg = await asyncio.to_thread(_encode)
             global _latest_jpeg
-            _latest_jpeg = buf.tobytes()
+            _latest_jpeg = jpeg
 
         await asyncio.sleep(0)
 

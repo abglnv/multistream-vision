@@ -7,8 +7,6 @@ logger = logging.getLogger(__name__)
 
 QUEUE_MAXSIZE = 2
 
-_open_sem = asyncio.Semaphore(1)
-
 
 async def stream_producer(
     stream_id: int,
@@ -28,8 +26,7 @@ async def stream_producer(
 
     while not stop_event.is_set():
         if cap is None or not cap.isOpened():
-            async with _open_sem:
-                cap = await asyncio.to_thread(_open)
+            cap = await asyncio.to_thread(_open)
             if cap is None:
                 logger.warning(f"[{stream_id}] can't open, retrying in 3s")
                 await asyncio.sleep(3)

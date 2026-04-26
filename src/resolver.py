@@ -25,15 +25,13 @@ def _resolve(url: str) -> str:
 
 async def resolve_urls(urls: list[str]) -> list[str]:
     """Resolve any YouTube URLs in the list; pass others through unchanged."""
-    resolved = []
-    for url in urls:
-        if _is_youtube(url):
-            try:
-                stream_url = await asyncio.to_thread(_resolve, url)
-                resolved.append(stream_url)
-            except Exception as exc:
-                logger.error(f"failed to resolve {url}: {exc}")
-                resolved.append(url)  # fall back to original
-        else:
-            resolved.append(url)
-    return resolved
+    async def _resolve_one(url: str) -> str:
+        if not _is_youtube(url):
+            return url
+        try:
+            return await asyncio.to_thread(_resolve, url)
+        except Exception as exc:
+            logger.error(f"failed to resolve {url}: {exc}")
+            return url
+
+    return list(await asyncio.gather(*(_resolve_one(u) for u in urls)))
