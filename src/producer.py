@@ -1,22 +1,16 @@
 import asyncio
 import logging
 import os
+import threading
 import time
 
 import cv2
 
-from src.config import COOKIES
-
-os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = (
-    "headers;Cookie: " + COOKIES + "\\r\\n"
-    "|referer;https://kaztoll.kz/"
-    "|user_agent;Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-)
-
 logger = logging.getLogger(__name__)
 
 QUEUE_MAXSIZE = 2
+
+_open_lock = threading.Lock()
 
 
 def _stamped(url: str) -> str:
@@ -30,11 +24,20 @@ async def stream_producer(
     url: str,
     queue: asyncio.Queue,
     stop_event: asyncio.Event,
+    cookie: str = "",
+    user_agent: str = "Mozilla/5.0",
 ) -> None:
     cap: cv2.VideoCapture | None = None
 
     def _open() -> cv2.VideoCapture | None:
-        c = cv2.VideoCapture(_stamped(url), cv2.CAP_FFMPEG)
+        opts = (
+            f"headers;Cookie: {cookie}\\r\\n"
+            "|referer;https://kaztoll.kz/"
+            f"|user_agent;{user_agent}"
+        )
+        with _open_lock:
+            os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = opts
+            c = cv2.VideoCapture(_stamped(url), cv2.CAP_FFMPEG)
         c.set(cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, 5000)
         return c if c.isOpened() else None
 

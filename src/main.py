@@ -8,6 +8,7 @@ os.environ["OPENCV_LOG_LEVEL"] = "ERROR"
 
 from src.consumer import InferenceEngine, inference_consumer, start_web
 from src.producer import QUEUE_MAXSIZE, stream_producer
+from src.session import fetch_sessions
 from src.streams import STREAMS
 
 logging.basicConfig(
@@ -27,9 +28,12 @@ async def run(stream_urls: list[str]) -> None:
     queues = [asyncio.Queue(maxsize=QUEUE_MAXSIZE) for _ in stream_urls]
     engine = InferenceEngine()
 
+    logger.info("fetching session cookies...")
+    sessions = await fetch_sessions(len(stream_urls))
+
     producers = [
         asyncio.create_task(
-            stream_producer(i, url, queues[i], stop_event),
+            stream_producer(i, url, queues[i], stop_event, cookie=sessions[i][0], user_agent=sessions[i][1]),
             name=f"producer-{i}",
         )
         for i, url in enumerate(stream_urls)
