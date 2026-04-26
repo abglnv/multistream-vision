@@ -95,6 +95,7 @@ async def inference_consumer(
     engine: InferenceEngine,
     stop_event: asyncio.Event,
 ) -> None:
+    global _latest_jpeg
     logger.info("consumer started")
     latest_frames: dict[int, np.ndarray] = {}
 

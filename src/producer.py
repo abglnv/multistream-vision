@@ -8,10 +8,6 @@ logger = logging.getLogger(__name__)
 QUEUE_MAXSIZE = 2
 _OPEN_TIMEOUT_S = 5.0
 
-# Serialize VideoCapture opens: concurrent RTSP inits can race on shared
-# FFMPEG network state; serialize to keep opens clean.
-_open_sem = asyncio.Semaphore(1)
-
 
 async def stream_producer(
     stream_id: int,
@@ -33,16 +29,14 @@ async def stream_producer(
 
     while not stop_event.is_set():
         if cap is None or not cap.isOpened():
-            async with _open_sem:
-                try:
-                    # asyncio-level safety net in case FFMPEG ignores the timeout
-                    cap = await asyncio.wait_for(
-                        asyncio.to_thread(_open),
-                        timeout=_OPEN_TIMEOUT_S + 5,
-                    )
-                except asyncio.TimeoutError:
-                    logger.warning(f"[{stream_id}] open timed out")
-                    cap = None
+            try:
+                cap = await asyncio.wait_for(
+                    asyncio.to_thread(_open),
+                    timeout=_OPEN_TIMEOUT_S + 5,
+                )
+            except asyncio.TimeoutError:
+                logger.warning(f"[{stream_id}] open timed out")
+                cap = None
             if cap is None:
                 logger.warning(f"[{stream_id}] can't open, retrying in 3s")
                 await asyncio.sleep(3)
