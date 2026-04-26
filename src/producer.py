@@ -1,8 +1,15 @@
 import asyncio
 import logging
+import os
 import time
 
 import cv2
+
+os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = (
+    "referer;https://kaztoll.kz/"
+    "|user_agent;Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+)
 
 logger = logging.getLogger(__name__)
 
@@ -24,7 +31,7 @@ async def stream_producer(
     cap: cv2.VideoCapture | None = None
 
     def _open() -> cv2.VideoCapture | None:
-        c = cv2.VideoCapture(_stamped(url))  # fresh timestamp on every connect
+        c = cv2.VideoCapture(_stamped(url), cv2.CAP_FFMPEG)
         c.set(cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, 5000)
         return c if c.isOpened() else None
 
