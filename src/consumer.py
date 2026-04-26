@@ -69,9 +69,17 @@ async def inference_consumer(
         batch = await asyncio.to_thread(engine.preprocess, list(live_frames))
         output = await asyncio.to_thread(engine.infer, batch)
 
-        #import nms_cuda
-        #keep = nms_cuda.run_nms(boxes_np, scores_np, iou_threshold=0.45)
+        preds = output.transpose(0, 2, 1)          
 
-        logger.debug(f"batch {list(indices)} → {output.shape}")
+        try:
+            import nms_cuda
+            for i, pred in enumerate(preds):
+                boxes_np = pred[:, :4].astype(np.float32)          # [8400, 4]
+                scores_np = pred[:, 4:].max(axis=1).astype(np.float32)  # [8400]
+                keep = nms_cuda.run_nms(boxes_np, scores_np, iou_threshold=0.45)
+                kept_boxes = boxes_np[keep.astype(bool)]
+                logger.debug(f"stream {indices[i]}: {len(kept_boxes)} detections after NMS")
+        except ImportError:
+            logger.debug(f"batch {list(indices)} → {output.shape} (nms_cuda not available)")
         await asyncio.sleep(0)
     logger.info("consumer stopped")
