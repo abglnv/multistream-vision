@@ -6,6 +6,11 @@ import cv2
 logger = logging.getLogger(__name__)
 
 QUEUE_MAXSIZE = 2
+_OPEN_TIMEOUT_S = 20.0
+
+# Serialize VideoCapture opens: concurrent FFMPEG network-stream inits
+# cause both to fail (YouTube CDN treats simultaneous connections as bots).
+_open_sem = asyncio.Semaphore(1)
 
 
 async def stream_producer(
@@ -17,8 +22,10 @@ async def stream_producer(
     cap: cv2.VideoCapture | None = None
 
     def _open() -> cv2.VideoCapture | None:
-        c = cv2.VideoCapture(url, cv2.CAP_FFMPEG)
-        return c if c.isOpened() else None
+        c = cv2.VideoCapture()
+        c.set(cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, int(_OPEN_TIMEOUT_S * 1000))
+        ok = c.open(url, cv2.CAP_FFMPEG)
+        return c if ok else None
 
     def _read():
         assert cap is not None
@@ -26,7 +33,16 @@ async def stream_producer(
 
     while not stop_event.is_set():
         if cap is None or not cap.isOpened():
-            cap = await asyncio.to_thread(_open)
+            async with _open_sem:
+                try:
+                    # asyncio-level safety net in case FFMPEG ignores the timeout
+                    cap = await asyncio.wait_for(
+                        asyncio.to_thread(_open),
+                        timeout=_OPEN_TIMEOUT_S + 5,
+                    )
+                except asyncio.TimeoutError:
+                    logger.warning(f"[{stream_id}] open timed out")
+                    cap = None
             if cap is None:
                 logger.warning(f"[{stream_id}] can't open, retrying in 3s")
                 await asyncio.sleep(3)
