@@ -1,14 +1,17 @@
 import argparse
 import asyncio
 import logging
+import os
 import signal
 
-from src.consumer import InferenceEngine, inference_consumer
+os.environ["OPENCV_LOG_LEVEL"] = "ERROR"
+
+from src.consumer import InferenceEngine, inference_consumer, start_web
 from src.producer import QUEUE_MAXSIZE, stream_producer
 from src.streams import STREAMS
 
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.DEBUG,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
 logger = logging.getLogger(__name__)
@@ -36,6 +39,7 @@ async def run(stream_urls: list[str]) -> None:
         name="consumer",
     )
 
+    await start_web()
     logger.info(f"Orchestrator running — {len(stream_urls)} streams")
     await asyncio.gather(*producers, consumer, return_exceptions=True)
     logger.info("Orchestrator stopped")

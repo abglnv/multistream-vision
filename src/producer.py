@@ -18,6 +18,7 @@ async def stream_producer(
 
     def _open() -> cv2.VideoCapture | None:
         c = cv2.VideoCapture(url)
+        c.set(cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, 5000)
         return c if c.isOpened() else None 
 
     def _read():

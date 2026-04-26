@@ -4,10 +4,14 @@ from typing import Optional
 
 import cv2
 import numpy as np
+from aiohttp import web
 
 logger = logging.getLogger(__name__)
 
 TARGET_H, TARGET_W = 640, 640
+GRID_COLS = 3
+
+_latest_jpeg: bytes = b""
 
 
 class InferenceEngine:
@@ -18,7 +22,7 @@ class InferenceEngine:
 
     def _load(self) -> None:
         try:
-            import onnxruntime as ort 
+            import onnxruntime as ort
             self.session = ort.InferenceSession(
                 self.model_path,
                 providers=["CUDAExecutionProvider", "CPUExecutionProvider"]
@@ -30,19 +34,50 @@ class InferenceEngine:
 
     def preprocess(self, frames: list[np.ndarray]) -> np.ndarray:
         batch = []
-        for f in frames: 
+        for f in frames:
             resized = cv2.resize(f, (TARGET_W, TARGET_H))
             rgb = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB)
-            chw = np.transpose(rgb.astype(np.float32) / 255.0, (2,0,1))
+            chw = np.transpose(rgb.astype(np.float32) / 255.0, (2, 0, 1))
             batch.append(chw)
         return np.stack(batch)
-        
+
     def infer(self, batch: np.ndarray) -> np.ndarray:
         if self.session is None:
             return np.zeros((batch.shape[0], 84, 8400), dtype=np.float32)
-        
-        name = self.session.get_inputs()[0].name 
+
+        name = self.session.get_inputs()[0].name
         return self.session.run(None, {name: batch})[0]
+
+
+def draw_boxes(frame: np.ndarray, boxes: np.ndarray, stream_id: int) -> np.ndarray:
+    """Draw bounding boxes on frame. boxes are cx,cy,w,h in 640x640 space."""
+    h, w = frame.shape[:2]
+    sx, sy = w / TARGET_W, h / TARGET_H
+    out = frame.copy()
+    for box in boxes:
+        cx, cy, bw, bh = box
+        x1 = int((cx - bw / 2) * sx)
+        y1 = int((cy - bh / 2) * sy)
+        x2 = int((cx + bw / 2) * sx)
+        y2 = int((cy + bh / 2) * sy)
+        cv2.rectangle(out, (x1, y1), (x2, y2), (0, 255, 0), 2)
+    cv2.putText(out, f"cam{stream_id} {len(boxes)}det", (8, 24),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+    return out
+
+
+def make_grid(frames: dict[int, np.ndarray], n_streams: int) -> np.ndarray:
+    cell_h, cell_w = 360, 640
+    cols = GRID_COLS
+    rows = (n_streams + cols - 1) // cols
+    grid = np.zeros((rows * cell_h, cols * cell_w, 3), dtype=np.uint8)
+    for idx in range(n_streams):
+        r, c = divmod(idx, cols)
+        y1, y2 = r * cell_h, (r + 1) * cell_h
+        x1, x2 = c * cell_w, (c + 1) * cell_w
+        if idx in frames:
+            grid[y1:y2, x1:x2] = cv2.resize(frames[idx], (cell_w, cell_h))
+    return grid
 
 
 async def inference_consumer(
@@ -51,6 +86,7 @@ async def inference_consumer(
     stop_event: asyncio.Event,
 ) -> None:
     logger.info("consumer started")
+    latest_frames: dict[int, np.ndarray] = {}
 
     while not stop_event.is_set():
         frames: list[Optional[np.ndarray]] = []
@@ -61,25 +97,61 @@ async def inference_consumer(
                 frames.append(None)
 
         live = [(i, f) for i, f in enumerate(frames) if f is not None]
-        if not live: 
+        if not live:
             await asyncio.sleep(0.01)
-            continue 
+            continue
 
         indices, live_frames = zip(*live)
         batch = await asyncio.to_thread(engine.preprocess, list(live_frames))
         output = await asyncio.to_thread(engine.infer, batch)
 
-        preds = output.transpose(0, 2, 1)          
+        preds = output.transpose(0, 2, 1)
 
         try:
             import nms_cuda
             for i, pred in enumerate(preds):
-                boxes_np = pred[:, :4].astype(np.float32)          # [8400, 4]
-                scores_np = pred[:, 4:].max(axis=1).astype(np.float32)  # [8400]
+                boxes_np = pred[:, :4].astype(np.float32)
+                scores_np = pred[:, 4:].max(axis=1).astype(np.float32)
                 keep = nms_cuda.run_nms(boxes_np, scores_np, iou_threshold=0.45)
                 kept_boxes = boxes_np[keep.astype(bool)]
-                logger.debug(f"stream {indices[i]}: {len(kept_boxes)} detections after NMS")
+                stream_id = indices[i]
+                logger.debug(f"stream {stream_id}: {len(kept_boxes)} detections after NMS")
+                latest_frames[stream_id] = draw_boxes(live_frames[i], kept_boxes, stream_id)
         except ImportError:
+            for i, pred in enumerate(preds):
+                latest_frames[indices[i]] = live_frames[i]
             logger.debug(f"batch {list(indices)} → {output.shape} (nms_cuda not available)")
+
+        if latest_frames:
+            grid = await asyncio.to_thread(make_grid, latest_frames, len(queues))
+            _, buf = cv2.imencode(".jpg", grid, [cv2.IMWRITE_JPEG_QUALITY, 70])
+            global _latest_jpeg
+            _latest_jpeg = buf.tobytes()
+
         await asyncio.sleep(0)
+
     logger.info("consumer stopped")
+
+
+async def mjpeg_handler(request: web.Request) -> web.StreamResponse:
+    resp = web.StreamResponse(headers={
+        "Content-Type": "multipart/x-mixed-replace; boundary=frame"
+    })
+    await resp.prepare(request)
+    while True:
+        if _latest_jpeg:
+            await resp.write(
+                b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + _latest_jpeg + b"\r\n"
+            )
+        await asyncio.sleep(0.05)
+    return resp
+
+
+async def start_web(host: str = "0.0.0.0", port: int = 8080) -> None:
+    app = web.Application()
+    app.router.add_get("/", mjpeg_handler)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, host, port)
+    await site.start()
+    logger.info(f"Stream available at http://localhost:{port}/")
