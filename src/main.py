@@ -45,7 +45,10 @@ async def run(stream_urls: list[str]) -> None:
 
     await start_web()
     logger.info(f"Orchestrator running — {len(stream_urls)} streams")
-    await asyncio.gather(*producers, consumer, return_exceptions=True)
+    results = await asyncio.gather(*producers, consumer, return_exceptions=True)
+    for name, result in zip([f"producer-{i}" for i in range(len(producers))] + ["consumer"], results):
+        if isinstance(result, Exception):
+            logger.error(f"Task '{name}' died: {result}", exc_info=result)
     logger.info("Orchestrator stopped")
 
 

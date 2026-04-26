@@ -114,36 +114,43 @@ async def inference_consumer(
 
         indices, live_frames = zip(*live)
 
-        batch = await _run_in_inference_pool(engine.preprocess, list(live_frames))
-        output = await _run_in_inference_pool(engine.infer, batch)
-
-        for i, frame in enumerate(live_frames):
-            latest_frames[indices[i]] = draw_boxes(frame, np.empty((0, 4)), indices[i])
-
-        preds = output.transpose(0, 2, 1)
-
         try:
-            import nms_cuda
-            for i, pred in enumerate(preds):
-                boxes_np = pred[:, :4].astype(np.float32)
-                scores_np = pred[:, 4:].max(axis=1).astype(np.float32)
-                keep = nms_cuda.run_nms(boxes_np, scores_np, iou_threshold=0.45)
-                kept_boxes = boxes_np[keep.astype(bool)]
-                stream_id = indices[i]
-                logger.debug(f"stream {stream_id}: {len(kept_boxes)} detections")
-                latest_frames[stream_id] = draw_boxes(live_frames[i], kept_boxes, stream_id)
-        except ImportError:
-            pass
+            batch = await _run_in_inference_pool(engine.preprocess, list(live_frames))
+            output = await _run_in_inference_pool(engine.infer, batch)
+
+            for i, frame in enumerate(live_frames):
+                latest_frames[indices[i]] = draw_boxes(frame, np.empty((0, 4)), indices[i])
+
+            preds = output.transpose(0, 2, 1)
+
+            try:
+                import nms_cuda
+                for i, pred in enumerate(preds):
+                    boxes_np = pred[:, :4].astype(np.float32)
+                    scores_np = pred[:, 4:].max(axis=1).astype(np.float32)
+                    keep = nms_cuda.run_nms(boxes_np, scores_np, iou_threshold=0.45)
+                    kept_boxes = boxes_np[keep.astype(bool)]
+                    stream_id = indices[i]
+                    logger.debug(f"stream {stream_id}: {len(kept_boxes)} detections")
+                    latest_frames[stream_id] = draw_boxes(live_frames[i], kept_boxes, stream_id)
+            except ImportError:
+                pass
+            except Exception as exc:
+                logger.error(f"NMS error: {exc}")
+
+            if latest_frames:
+                snap = dict(latest_frames)
+                n = len(queues)
+
+                def _encode():
+                    g = make_grid(snap, n)
+                    _, buf = cv2.imencode(".jpg", g, [cv2.IMWRITE_JPEG_QUALITY, 70])
+                    return buf.tobytes()
+
+                _latest_jpeg = await _run_in_inference_pool(_encode)
+
         except Exception as exc:
-            logger.error(f"NMS error: {exc}")
-
-        if latest_frames:
-            def _encode():
-                g = make_grid(latest_frames, len(queues))
-                _, buf = cv2.imencode(".jpg", g, [cv2.IMWRITE_JPEG_QUALITY, 70])
-                return buf.tobytes()
-
-            _latest_jpeg = await _run_in_inference_pool(_encode)
+            logger.error(f"consumer loop error: {exc}", exc_info=True)
 
         await asyncio.sleep(0)
 
