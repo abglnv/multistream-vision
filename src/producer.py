@@ -1,4 +1,5 @@
 import asyncio
+import concurrent.futures
 import logging
 
 import cv2
@@ -15,6 +16,10 @@ async def stream_producer(
     queue: asyncio.Queue,
     stop_event: asyncio.Event,
 ) -> None:
+    executor = concurrent.futures.ThreadPoolExecutor(
+        max_workers=1, thread_name_prefix=f"stream{stream_id}"
+    )
+    loop = asyncio.get_running_loop()
     cap: cv2.VideoCapture | None = None
 
     def _open() -> cv2.VideoCapture | None:
@@ -27,43 +32,49 @@ async def stream_producer(
         assert cap is not None
         return cap.read()
 
-    while not stop_event.is_set():
-        if cap is None or not cap.isOpened():
+    def _release():
+        if cap is not None:
+            cap.release()
+
+    try:
+        while not stop_event.is_set():
+            if cap is None or not cap.isOpened():
+                try:
+                    cap = await asyncio.wait_for(
+                        loop.run_in_executor(executor, _open),
+                        timeout=_OPEN_TIMEOUT_S + 5,
+                    )
+                except asyncio.TimeoutError:
+                    logger.warning(f"[{stream_id}] open timed out")
+                    cap = None
+                if cap is None:
+                    logger.warning(f"[{stream_id}] can't open, retrying in 3s")
+                    await asyncio.sleep(3)
+                    continue
+                logger.info(f"[{stream_id}] connected")
+
             try:
-                cap = await asyncio.wait_for(
-                    asyncio.to_thread(_open),
-                    timeout=_OPEN_TIMEOUT_S + 5,
-                )
-            except asyncio.TimeoutError:
-                logger.warning(f"[{stream_id}] open timed out")
+                ret, frame = await loop.run_in_executor(executor, _read)
+            except Exception as e:
+                logger.error(f"[{stream_id}] read error: {e}")
+                await loop.run_in_executor(executor, _release)
                 cap = None
-            if cap is None:
-                logger.warning(f"[{stream_id}] can't open, retrying in 3s")
-                await asyncio.sleep(3)
                 continue
-            logger.info(f"[{stream_id}] connected")
 
-        try:
-            ret, frame = await asyncio.to_thread(_read)
-        except Exception as e:
-            logger.error(f"[{stream_id}] read error: {e}")
-            cap.release()
-            cap = None
-            continue
+            if not ret or frame is None:
+                logger.warning(f"[{stream_id}] stream ended, reconnecting")
+                await loop.run_in_executor(executor, _release)
+                cap = None
+                continue
 
-        if not ret or frame is None:
-            logger.warning(f"[{stream_id}] stream ended, reconnecting")
-            cap.release()
-            cap = None
-            continue
+            if queue.full():
+                try:
+                    queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    pass
+            queue.put_nowait(frame)
 
-        if queue.full():
-            try:
-                queue.get_nowait()
-            except asyncio.QueueEmpty:
-                pass
-        queue.put_nowait(frame)
-
-    if cap:
-        cap.release()
-    logger.info(f"[{stream_id}] producer stopped")
+    finally:
+        await loop.run_in_executor(executor, _release)
+        executor.shutdown(wait=False)
+        logger.info(f"[{stream_id}] producer stopped")
