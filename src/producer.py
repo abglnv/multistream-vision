@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import time
 
 import cv2
 
@@ -8,18 +9,24 @@ logger = logging.getLogger(__name__)
 QUEUE_MAXSIZE = 2
 
 
+def _stamped(url: str) -> str:
+    ts = int(time.time() * 1000)
+    base = url.split("?")[0]
+    return f"{base}?t={ts}"
+
+
 async def stream_producer(
     stream_id: int,
     url: str,
     queue: asyncio.Queue,
     stop_event: asyncio.Event,
 ) -> None:
-    cap: cv2.VideoCapture | None = None 
+    cap: cv2.VideoCapture | None = None
 
     def _open() -> cv2.VideoCapture | None:
-        c = cv2.VideoCapture(url)
+        c = cv2.VideoCapture(_stamped(url))  # fresh timestamp on every connect
         c.set(cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, 5000)
-        return c if c.isOpened() else None 
+        return c if c.isOpened() else None
 
     def _read():
         assert cap is not None 
@@ -42,11 +49,9 @@ async def stream_producer(
             cap = None 
             continue 
 
-        if not ret or frame is None: 
-            logger.warning(f"{stream_id} producer stream ended; retrying in 1 second")
-            cap = None 
-            await asyncio.sleep(1)
-            continue 
+        if not ret or frame is None:
+            cap = None  
+            continue
 
         if queue.full():
             try:
