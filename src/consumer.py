@@ -50,7 +50,7 @@ class InferenceEngine:
 
 
 def draw_boxes(frame: np.ndarray, boxes: np.ndarray, stream_id: int) -> np.ndarray:
-    """Draw bounding boxes on frame. boxes are cx,cy,w,h in 640x640 space."""
+    import time
     h, w = frame.shape[:2]
     sx, sy = w / TARGET_W, h / TARGET_H
     out = frame.copy()
@@ -61,7 +61,8 @@ def draw_boxes(frame: np.ndarray, boxes: np.ndarray, stream_id: int) -> np.ndarr
         x2 = int((cx + bw / 2) * sx)
         y2 = int((cy + bh / 2) * sy)
         cv2.rectangle(out, (x1, y1), (x2, y2), (0, 255, 0), 2)
-    cv2.putText(out, f"cam{stream_id} {len(boxes)}det", (8, 24),
+    ts = time.strftime("%H:%M:%S")
+    cv2.putText(out, f"cam{stream_id} | {len(boxes)} det | {ts}", (8, 24),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
     return out
 
@@ -106,7 +107,7 @@ async def inference_consumer(
         output = await asyncio.to_thread(engine.infer, batch)
 
         for i, frame in enumerate(live_frames):
-            latest_frames[indices[i]] = frame
+            latest_frames[indices[i]] = draw_boxes(frame, np.empty((0, 4)), indices[i])
 
         preds = output.transpose(0, 2, 1)
 
