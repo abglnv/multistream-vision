@@ -1,4 +1,4 @@
-# multistream vision 
+# multistream vision
 
 Async pipeline that ingests 8 simultaneous RTSP streams, runs YOLOv8n inference on every frame batch, and serves a live MJPEG grid over HTTP. NMS is accelerated by a custom CUDA kernel exposed via Pybind11.
 
@@ -73,33 +73,33 @@ open http://localhost:8080
 
 ## Benchmarks
 
-> Tested on NVIDIA GTX 1650 8 GB.
+> Tested on NVIDIA GTX 1650 4 GB.
 
 ### NMS — NumPy vs CUDA (single stream)
 
-| Boxes | NumPy | CUDA | Speedup |
-|------:|------:|-----:|--------:|
-| 1 000 | 14.33 ms | 1.34 ms | **10.7×** |
-| 8 400 | 145.35 ms | 4.88 ms | **29.8×** |
-| 25 000 | 529.61 ms | 11.54 ms | **45.9×** |
+|   Boxes |       NumPy |     CUDA |          Speedup |
+| ------: | ----------: | -------: | ---------------: |
+|   1 000 |    14.33 ms |  1.34 ms | **10.7×** |
+|   8 400 |   145.35 ms |  4.88 ms | **29.8×** |
+|  25 000 |   529.61 ms | 11.54 ms | **45.9×** |
 | 100 000 | 5 571.57 ms | 88.16 ms | **63.2×** |
 
 ### Throughput (2 streams, 60 s)
 
-| Stream | FPS | Drop rate |
-|--------|----:|----------:|
-| stream0 | 24.9 | 38.8% |
-| stream1 | 23.6 | 39.5% |
+| Stream          |            FPS |       Drop rate |
+| --------------- | -------------: | --------------: |
+| stream0         |           24.9 |           38.8% |
+| stream1         |           23.6 |           39.5% |
 | **Total** | **48.4** | **39.1%** |
 
 Consumer pipeline (per batch):
 
-| Stage | mean | min | p99 |
-|-------|-----:|----:|----:|
-| Preprocess | 23.48 ms | 2.89 ms | 39.87 ms |
-| Infer (ONNX) | 86.01 ms | 39.98 ms | 115.64 ms |
-| End-to-end | 109.49 ms | 44.63 ms | 103.57 ms |
-| Consumer FPS | 17.2 | | |
+| Stage        |      mean |      min |       p99 |
+| ------------ | --------: | -------: | --------: |
+| Preprocess   |  23.48 ms |  2.89 ms |  39.87 ms |
+| Infer (ONNX) |  86.01 ms | 39.98 ms | 115.64 ms |
+| End-to-end   | 109.49 ms | 44.63 ms | 103.57 ms |
+| Consumer FPS |      17.2 |          |           |
 
 ### Reproduce
 
