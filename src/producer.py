@@ -5,8 +5,11 @@ import time
 
 import cv2
 
+from src.config import COOKIES
+
 os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = (
-    "referer;https://kaztoll.kz/"
+    "headers;Cookie: " + COOKIES + "\\r\\n"
+    "|referer;https://kaztoll.kz/"
     "|user_agent;Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 )
