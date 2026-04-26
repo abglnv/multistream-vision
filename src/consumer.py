@@ -50,7 +50,10 @@ class InferenceEngine:
         if self.session is None:
             return np.zeros((batch.shape[0], 84, 8400), dtype=np.float32)
         name = self.session.get_inputs()[0].name
-        return self.session.run(None, {name: batch})[0]
+        return np.stack([
+            self.session.run(None, {name: frame[None]})[0][0]
+            for frame in batch
+        ])
 
 
 def draw_boxes(frame: np.ndarray, boxes: np.ndarray, stream_id: int) -> np.ndarray:
