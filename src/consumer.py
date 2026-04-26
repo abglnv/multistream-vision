@@ -150,11 +150,21 @@ async def mjpeg_handler(request: web.Request) -> web.StreamResponse:
     return resp
 
 
+async def _index(request: web.Request) -> web.Response:
+    html = """<!DOCTYPE html><html>
+<head><title>Vision Watchdog</title>
+<style>body{background:#111;margin:0;display:flex;justify-content:center;align-items:center;height:100vh}
+img{max-width:100%;max-height:100vh}</style></head>
+<body><img src="/stream"></body></html>"""
+    return web.Response(text=html, content_type="text/html")
+
+
 async def start_web(host: str = "0.0.0.0", port: int = 8080) -> None:
     app = web.Application()
-    app.router.add_get("/", mjpeg_handler)
+    app.router.add_get("/", _index)
+    app.router.add_get("/stream", mjpeg_handler)
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, host, port)
     await site.start()
-    logger.info(f"Stream available at http://localhost:{port}/")
+    logger.info(f"Viewer → http://localhost:{port}/")
