@@ -8,6 +8,7 @@ os.environ["OPENCV_LOG_LEVEL"] = "ERROR"
 
 from src.consumer import InferenceEngine, inference_consumer, start_web
 from src.producer import QUEUE_MAXSIZE, stream_producer
+from src.resolver import resolve_urls
 from src.streams import STREAMS
 
 logging.basicConfig(
@@ -23,6 +24,9 @@ async def run(stream_urls: list[str]) -> None:
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGINT, signal.SIGTERM):
         loop.add_signal_handler(sig, stop_event.set)
+
+    logger.info("resolving stream URLs...")
+    stream_urls = await resolve_urls(stream_urls)
 
     queues = [asyncio.Queue(maxsize=QUEUE_MAXSIZE) for _ in stream_urls]
     engine = InferenceEngine()
