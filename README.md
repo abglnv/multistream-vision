@@ -2,6 +2,8 @@
 
 Async pipeline that ingests 8 simultaneous RTSP streams, runs YOLOv8n inference on every frame batch, and serves a live MJPEG grid over HTTP. NMS is accelerated by a custom CUDA kernel exposed via Pybind11.
 
+![Detection grid](media/image.png)
+
 ---
 
 ## Architecture
