@@ -52,15 +52,17 @@ async def stream_producer(
                 continue 
             logger.info(f"cap {stream_id} connected")
 
-        try: 
+        try:
             ret, frame = await asyncio.to_thread(_read)
         except Exception as e:
             logger.error(f"[{stream_id}] read error: {e}")
-            cap = None 
-            continue 
+            cap.release()
+            cap = None
+            continue
 
         if not ret or frame is None:
-            cap = None  
+            cap.release()  # close connection before reopening — server rejects double sessions
+            cap = None
             continue
 
         if queue.full():
