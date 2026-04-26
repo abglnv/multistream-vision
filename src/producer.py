@@ -6,10 +6,10 @@ import cv2
 logger = logging.getLogger(__name__)
 
 QUEUE_MAXSIZE = 2
-_OPEN_TIMEOUT_S = 20.0
+_OPEN_TIMEOUT_S = 5.0
 
-# Serialize VideoCapture opens: concurrent FFMPEG network-stream inits
-# cause both to fail (YouTube CDN treats simultaneous connections as bots).
+# Serialize VideoCapture opens: concurrent RTSP inits can race on shared
+# FFMPEG network state; serialize to keep opens clean.
 _open_sem = asyncio.Semaphore(1)
 
 

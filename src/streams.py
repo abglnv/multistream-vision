@@ -1,4 +1,1 @@
-STREAMS = [
-    "https://www.youtube.com/watch?v=butK9aqBY1E",
-    "https://www.youtube.com/watch?v=FWvIPfxK5Jo",
-]
+STREAMS = [f"rtsp://localhost:8554/stream{i}" for i in range(8)]
