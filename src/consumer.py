@@ -1,11 +1,14 @@
 import asyncio
 import concurrent.futures
 import logging
+from collections import deque
 from typing import Optional
 
 import cv2
 import numpy as np
 from aiohttp import web
+
+from .tracker import COCO_NAMES, StreamTracker, TrackResult
 
 logger = logging.getLogger(__name__)
 
@@ -56,20 +59,52 @@ class InferenceEngine:
         ])
 
 
-def draw_boxes(frame: np.ndarray, boxes: np.ndarray, stream_id: int) -> np.ndarray:
+_TRAIL_LEN = 15
+
+
+def _track_color(track_id: int) -> tuple[int, int, int]:
+    hue = (track_id * 37) % 180
+    bgr = cv2.cvtColor(np.array([[[hue, 200, 220]]], dtype=np.uint8), cv2.COLOR_HSV2BGR)[0, 0]
+    return (int(bgr[0]), int(bgr[1]), int(bgr[2]))
+
+
+def draw_tracks(
+    frame: np.ndarray,
+    tracks: list[TrackResult],
+    stream_id: int,
+    history: dict[int, deque],
+) -> np.ndarray:
     import time
-    h, w = frame.shape[:2]
-    sx, sy = w / TARGET_W, h / TARGET_H
     out = frame.copy()
-    for box in boxes:
-        cx, cy, bw, bh = box
-        x1 = int((cx - bw / 2) * sx)
-        y1 = int((cy - bh / 2) * sy)
-        x2 = int((cx + bw / 2) * sx)
-        y2 = int((cy + bh / 2) * sy)
-        cv2.rectangle(out, (x1, y1), (x2, y2), (0, 255, 0), 2)
+
+    for tid, pts in history.items():
+        trail = list(pts)[-_TRAIL_LEN:]
+        color = _track_color(tid)
+        for j in range(1, len(trail)):
+            cv2.line(out,
+                     (int(trail[j - 1][0]), int(trail[j - 1][1])),
+                     (int(trail[j][0]), int(trail[j][1])),
+                     color, 1)
+
+    for t in tracks:
+        color = _track_color(t.track_id)
+        cv2.rectangle(out, (t.x1, t.y1), (t.x2, t.y2), color, 2)
+        name = COCO_NAMES.get(t.class_id, "obj")
+        label = f"#{t.track_id} {name} {t.velocity_px_s:.0f}px/s"
+        cv2.putText(out, label, (t.x1, max(t.y1 - 4, 12)),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.45, color, 1)
+
     ts = time.strftime("%H:%M:%S")
-    cv2.putText(out, f"cam{stream_id} | {len(boxes)} det | {ts}", (8, 24),
+    cv2.putText(out, f"cam{stream_id} | {len(tracks)} trk | {ts}", (8, 24),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+    return out
+
+
+def draw_overlay(frame: np.ndarray, stream_id: int) -> np.ndarray:
+    import time
+    out = frame.copy()
+    ts = time.strftime("%H:%M:%S")
+    cv2.putText(out, f"cam{stream_id} | {ts}", (8, 24),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
     return out
 
@@ -101,6 +136,7 @@ async def inference_consumer(
     global _latest_jpeg
     logger.info("consumer started")
     latest_frames: dict[int, np.ndarray] = {}
+    trackers: dict[int, StreamTracker] = {i: StreamTracker() for i in range(len(queues))}
 
     while not stop_event.is_set():
         frames: list[Optional[np.ndarray]] = []
@@ -122,7 +158,7 @@ async def inference_consumer(
             output = await _run_in_inference_pool(engine.infer, batch)
 
             for i, frame in enumerate(live_frames):
-                latest_frames[indices[i]] = draw_boxes(frame, np.empty((0, 4)), indices[i])
+                latest_frames[indices[i]] = draw_overlay(frame, indices[i])
 
             preds = output.transpose(0, 2, 1)
 
@@ -131,15 +167,28 @@ async def inference_consumer(
                 for i, pred in enumerate(preds):
                     boxes_np = pred[:, :4].astype(np.float32)
                     scores_np = pred[:, 4:].max(axis=1).astype(np.float32)
+                    class_ids_np = pred[:, 4:].argmax(axis=1).astype(np.int32)
+
                     keep = nms_cuda.run_nms(boxes_np, scores_np, iou_threshold=0.45)
-                    kept_boxes = boxes_np[keep.astype(bool)]
+                    mask = keep.astype(bool)
+                    kept_boxes = boxes_np[mask]
+                    kept_scores = scores_np[mask]
+                    kept_class_ids = class_ids_np[mask]
+
                     stream_id = indices[i]
-                    logger.debug(f"stream {stream_id}: {len(kept_boxes)} detections")
-                    latest_frames[stream_id] = draw_boxes(live_frames[i], kept_boxes, stream_id)
+                    tracker = trackers[stream_id]
+                    tracks = tracker.update(
+                        kept_boxes, kept_scores, kept_class_ids,
+                        live_frames[i].shape[:2],
+                    )
+                    logger.debug(f"stream {stream_id}: {len(kept_boxes)} det, {len(tracks)} tracks")
+                    latest_frames[stream_id] = draw_tracks(
+                        live_frames[i], tracks, stream_id, tracker.history,
+                    )
             except ImportError:
                 pass
             except Exception as exc:
-                logger.error(f"NMS error: {exc}")
+                logger.error(f"NMS/tracker error: {exc}")
 
             if latest_frames:
                 snap = dict(latest_frames)

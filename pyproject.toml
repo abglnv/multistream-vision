@@ -9,6 +9,7 @@ dependencies = [
     "onnxruntime-gpu>=1.18.0",
     "psutil>=5.9.0",
     "aiohttp>=3.9.0",
+    "supervision>=0.21.0",
 ]
 
 [build-system]
