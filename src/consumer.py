@@ -1,14 +1,18 @@
 import asyncio
 import concurrent.futures
 import logging
+import sys
 from collections import deque
+from pathlib import Path
 from typing import Optional
 
 import cv2
 import numpy as np
 from aiohttp import web
 
-from .tracker import COCO_NAMES, StreamTracker, TrackResult
+sys.path.insert(0, str(Path(__file__).parent.parent / "cuda"))
+
+from .tracker import COCO_NAMES, SCALE_M_PER_PX, StreamTracker, TrackResult
 
 logger = logging.getLogger(__name__)
 
@@ -90,8 +94,7 @@ def draw_tracks(
         color = _track_color(t.track_id)
         cv2.rectangle(out, (t.x1, t.y1), (t.x2, t.y2), color, 2)
         name = COCO_NAMES.get(t.class_id, "obj")
-        label = f"#{t.track_id} {name} {t.velocity_px_s:.0f}px/s"
-        cv2.putText(out, label, (t.x1, max(t.y1 - 4, 12)),
+        cv2.putText(out, f"#{t.track_id} {name}", (t.x1, max(t.y1 - 4, 12)),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.45, color, 1)
 
     ts = time.strftime("%H:%M:%S")
@@ -106,6 +109,38 @@ def draw_overlay(frame: np.ndarray, stream_id: int) -> np.ndarray:
     ts = time.strftime("%H:%M:%S")
     cv2.putText(out, f"cam{stream_id} | {ts}", (8, 24),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+    return out
+
+
+def draw_speed_hud(grid: np.ndarray, all_tracks: dict[int, list[TrackResult]]) -> np.ndarray:
+    entries = [
+        (sid, t.track_id, COCO_NAMES.get(t.class_id, "obj"), t.speed_kmh)
+        for sid, tracks in sorted(all_tracks.items())
+        for t in sorted(tracks, key=lambda t: t.speed_kmh, reverse=True)
+    ]
+    if not entries:
+        return grid
+
+    line_h, pad = 20, 8
+    panel_w = 215
+    panel_h = line_h * min(len(entries), 25) + pad * 2 + 20
+    x0 = grid.shape[1] - panel_w - 10
+    y0 = 10
+
+    out = grid.copy()
+    overlay = out.copy()
+    cv2.rectangle(overlay, (x0, y0), (x0 + panel_w, y0 + panel_h), (20, 20, 20), -1)
+    cv2.addWeighted(overlay, 0.72, out, 0.28, 0, out)
+
+    cv2.putText(out, f"Speed  km/h  (scale={SCALE_M_PER_PX:.3f}m/px)",
+                (x0 + pad, y0 + 16), cv2.FONT_HERSHEY_SIMPLEX, 0.38, (180, 180, 180), 1)
+
+    for i, (sid, tid, name, spd) in enumerate(entries[:25]):
+        y = y0 + 20 + pad + i * line_h
+        color = (0, 220, 0) if spd < 90 else (0, 165, 255) if spd < 130 else (0, 0, 255)
+        cv2.putText(out, f"cam{sid} #{tid:<3d} {name:<5}  {spd:5.0f}",
+                    (x0 + pad, y + 13), cv2.FONT_HERSHEY_SIMPLEX, 0.42, color, 1)
+
     return out
 
 
@@ -162,6 +197,7 @@ async def inference_consumer(
 
             preds = output.transpose(0, 2, 1)
 
+            all_tracks: dict[int, list[TrackResult]] = {}
             try:
                 import nms_cuda
                 for i, pred in enumerate(preds):
@@ -169,7 +205,7 @@ async def inference_consumer(
                     scores_np = pred[:, 4:].max(axis=1).astype(np.float32)
                     class_ids_np = pred[:, 4:].argmax(axis=1).astype(np.int32)
 
-                    keep = nms_cuda.run_nms(boxes_np, scores_np, iou_threshold=0.45)
+                    keep = nms_cuda.run_nms(boxes_np, scores_np, iou_threshold=0.45, conf_threshold=0.25)
                     mask = keep.astype(bool)
                     kept_boxes = boxes_np[mask]
                     kept_scores = scores_np[mask]
@@ -181,6 +217,7 @@ async def inference_consumer(
                         kept_boxes, kept_scores, kept_class_ids,
                         live_frames[i].shape[:2],
                     )
+                    all_tracks[stream_id] = tracks
                     logger.debug(f"stream {stream_id}: {len(kept_boxes)} det, {len(tracks)} tracks")
                     latest_frames[stream_id] = draw_tracks(
                         live_frames[i], tracks, stream_id, tracker.history,
@@ -192,10 +229,12 @@ async def inference_consumer(
 
             if latest_frames:
                 snap = dict(latest_frames)
+                snap_tracks = dict(all_tracks)
                 n = len(queues)
 
                 def _encode():
                     g = make_grid(snap, n)
+                    g = draw_speed_hud(g, snap_tracks)
                     _, buf = cv2.imencode(".jpg", g, [cv2.IMWRITE_JPEG_QUALITY, 70])
                     return buf.tobytes()
 

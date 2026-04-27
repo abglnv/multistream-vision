@@ -1,8 +1,10 @@
 # multistream vision
 
-Async pipeline that ingests 8 simultaneous RTSP streams, runs YOLOv8n inference on every frame batch, and serves a live MJPEG grid over HTTP. NMS is accelerated by a custom CUDA kernel exposed via Pybind11.
+Async pipeline that ingests 8 simultaneous RTSP streams, runs YOLOv8n inference on every frame batch, tracks vehicles with ByteTrack, and serves a live MJPEG grid over HTTP. NMS is accelerated by a custom CUDA kernel exposed via Pybind11. A speed HUD shows each track's estimated speed in km/h.
 
 ![Detection grid](media/image.png)
+
+![Tracking + speed HUD](media/image2.png)
 
 ---
 
@@ -26,10 +28,11 @@ Async pipeline that ingests 8 simultaneous RTSP streams, runs YOLOv8n inference 
 
 | Layer               | Tool                           |
 | ------------------- | ------------------------------ |
-| Async orchestration | Python `asyncio`             |
+| Async orchestration | Python `asyncio`               |
 | Stream ingest       | OpenCV + FFMPEG (RTSP)         |
-| Inference           | YOLOv8n → ONNX Runtime (CUDA) |
+| Inference           | YOLOv8n → ONNX Runtime (CUDA)  |
 | NMS                 | Custom CUDA kernel + Pybind11  |
+| Tracking            | ByteTrack (supervision)        |
 | Stream server       | mediamtx                       |
 | Web output          | aiohttp MJPEG                  |
 
@@ -44,8 +47,14 @@ Async pipeline that ingests 8 simultaneous RTSP streams, runs YOLOv8n inference 
 uv sync
 
 # build CUDA NMS kernel
-nvcc -O3 -arch=sm_86 -shared -Xcompiler -fPIC -o libnms.so nms.cu
-uv run python setup.py build_ext --inplace
+cd cuda
+PYBIND=$(uv run python -c "import pybind11; print(pybind11.get_include())")
+nvcc -O3 -arch=sm_75 --compiler-options '-fPIC' \
+  -I"$PYBIND" -I/usr/include/python3.12 \
+  -shared nms.cu bindings.cpp \
+  -o nms_cuda.cpython-312-x86_64-linux-gnu.so \
+  -L/usr/local/cuda/lib64 -lcudart
+cd ..
 
 # export YOLOv8n to ONNX
 uv run pip install ultralytics
@@ -70,6 +79,18 @@ uv run python -m src.main --streams 8
 # open in browser
 open http://localhost:8080
 ```
+
+---
+
+## Speed calibration
+
+Speed is estimated by converting pixel displacement to km/h using a fixed scale factor in `src/tracker.py`:
+
+```python
+SCALE_M_PER_PX = 0.05  # adjust this
+```
+
+To calibrate: measure one lane width in pixels from your stream, then set `SCALE_M_PER_PX = 3.75 / lane_width_px`. Use a point at mid-frame vertically for best accuracy.
 
 ---
 

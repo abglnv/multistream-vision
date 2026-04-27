@@ -8,7 +8,12 @@ VEHICLE_CLASSES = frozenset([2, 3, 5, 7])  # car, motorcycle, bus, truck
 COCO_NAMES = {2: "car", 3: "moto", 5: "bus", 7: "truck"}
 
 _MODEL_SIZE = 640
-_HISTORY_LEN = 20  
+_HISTORY_LEN = 20
+
+# Calibrate by measuring one lane width in pixels in your stream, then:
+#   SCALE_M_PER_PX = 3.75 / lane_width_px
+# Use a point in the middle of the frame vertically for best accuracy.
+SCALE_M_PER_PX = 0.05
 
 
 @dataclass
@@ -19,7 +24,7 @@ class TrackResult:
     x2: int
     y2: int
     class_id: int
-    velocity_px_s: float
+    speed_kmh: float
 
 
 class StreamTracker:
@@ -52,7 +57,7 @@ class StreamTracker:
             x1, y1, x2, y2 = tracked.xyxy[i].astype(int)
             cid = int(tracked.class_id[i]) if tracked.class_id is not None else -1
             self.history[tid].append(((x1 + x2) / 2.0, (y1 + y2) / 2.0))
-            results.append(TrackResult(tid, x1, y1, x2, y2, cid, self._velocity(tid)))
+            results.append(TrackResult(tid, x1, y1, x2, y2, cid, self._speed_kmh(tid)))
 
         return results
 
@@ -86,9 +91,10 @@ class StreamTracker:
             class_id=class_ids[mask].astype(int),
         )
 
-    def _velocity(self, track_id: int) -> float:
+    def _speed_kmh(self, track_id: int) -> float:
         pts = self.history[track_id]
         if len(pts) < 2:
             return 0.0
         arr = np.array(pts)
-        return float(np.linalg.norm(np.diff(arr, axis=0), axis=1).mean() * self.fps)
+        px_per_s = float(np.linalg.norm(np.diff(arr, axis=0), axis=1).mean() * self.fps)
+        return px_per_s * SCALE_M_PER_PX * 3.6
